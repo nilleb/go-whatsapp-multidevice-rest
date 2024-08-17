@@ -4,35 +4,47 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"mime"
 	"net/http"
+	"os"
 	"runtime"
+	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
 	"github.com/forPelevin/gomoji"
+	"github.com/gorilla/websocket"
 	webp "github.com/nickalie/go-webpbin"
 	"github.com/rivo/uniseg"
 	"github.com/sunshineplan/imgconv"
 
 	qrCode "github.com/skip2/go-qrcode"
+	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
 	"go.mau.fi/whatsmeow"
+	"go.mau.fi/whatsmeow/appstate"
 	wabin "go.mau.fi/whatsmeow/binary"
 	waproto "go.mau.fi/whatsmeow/binary/proto"
 	"go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/store/sqlstore"
 	"go.mau.fi/whatsmeow/types"
+	"go.mau.fi/whatsmeow/types/events"
 
 	"github.com/dimaskiddo/go-whatsapp-multidevice-rest/pkg/env"
 	"github.com/dimaskiddo/go-whatsapp-multidevice-rest/pkg/log"
 )
 
+var defaultMediaPath = "media"
 var WhatsAppDatastore *sqlstore.Container
 var WhatsAppClient = make(map[string]*whatsmeow.Client)
+var MediaPath *string = &defaultMediaPath
 
 var (
 	WhatsAppClientProxyURL string
@@ -49,6 +61,13 @@ func init() {
 	dbURI, err := env.GetEnvString("WHATSAPP_DATASTORE_URI")
 	if err != nil {
 		log.Print(nil).Fatal("Error Parse Environment Variable for WhatsApp Client Datastore URI")
+	}
+
+	mediaPath, err := env.GetEnvString("WHATSAPP_MEDIA_PATH")
+	if err != nil {
+		log.Print(nil).Fatal("Error Parse Environment Variable for WhatsApp Client Media Path")
+	} else {
+		MediaPath = &mediaPath
 	}
 
 	datastore, err := sqlstore.New(dbType, dbURI, nil)
@@ -1342,4 +1361,284 @@ func WhatsAppGroupLeave(jid string, gjid string) error {
 
 	// Return Error WhatsApp Client is not Valid
 	return errors.New("WhatsApp Client is not Valid")
+}
+
+type WhatsAppConfiguration struct {
+	wpClient       *whatsmeow.Client
+	startupTime    int64
+	historySyncID  int32
+	wsConn         *websocket.Conn
+	eventHandlerId uint32
+	mu             sync.Mutex
+}
+
+func (wac *WhatsAppConfiguration) UpdateWsConn(newWsConn *websocket.Conn) {
+	wac.mu.Lock()
+	defer wac.mu.Unlock()
+	wac.wsConn = newWsConn
+}
+
+func (wac *WhatsAppConfiguration) addEventToQueue(event string) {
+	if wac.wsConn != nil {
+		err := wac.wsConn.WriteMessage(websocket.TextMessage, []byte(event))
+		if err != nil {
+			log.Print(nil).Warnf("Failed to send event on WebSocket: %v", err)
+		}
+	}
+}
+
+func (wac *WhatsAppConfiguration) handler(rawEvt interface{}) {
+	switch evt := rawEvt.(type) {
+	case *events.AppStateSyncComplete:
+		if len(wac.wpClient.Store.PushName) > 0 && evt.Name == appstate.WAPatchCriticalBlock {
+			err := wac.wpClient.SendPresence(types.PresenceAvailable)
+			if err != nil {
+				//log.Warnf("Failed to send available presence: %v", err)
+			} else {
+				wac.addEventToQueue("{\"eventType\":\"AppStateSyncComplete\",\"name\":\"" + string(evt.Name) + "\"}")
+				//log.Infof("Marked self as available")
+			}
+		}
+	case *events.Connected:
+		if len(wac.wpClient.Store.PushName) == 0 {
+			return
+		}
+		// Send presence available when connecting and when the pushname is changed.
+		// This makes sure that outgoing messages always have the right pushname.
+		err := wac.wpClient.SendPresence(types.PresenceAvailable)
+		if err != nil {
+			//log.Warnf("Failed to send available presence: %v", err)
+		} else {
+			wac.addEventToQueue("{\"eventType\":\"Connected\"}")
+			//log.Infof("Marked self as available")
+		}
+	case *events.PushNameSetting:
+		if len(wac.wpClient.Store.PushName) == 0 {
+			return
+		}
+		// Send presence available when connecting and when the pushname is changed.
+		// This makes sure that outgoing messages always have the right pushname.
+		err := wac.wpClient.SendPresence(types.PresenceAvailable)
+		if err != nil {
+			//log.Warnf("Failed to send available presence: %v", err)
+		} else {
+			wac.addEventToQueue("{\"eventType\":\"PushNameSetting\",\"timestamp\":" + strconv.FormatInt(evt.Timestamp.Unix(), 10) + ",\"action\":\"" + (*evt.Action.Name) + "\",\"fromFullSync\":" + strconv.FormatBool(evt.FromFullSync) + "}")
+			//log.Infof("Marked self as available")
+		}
+	case *events.StreamReplaced:
+		os.Exit(0)
+	case *events.Message:
+		// fmt.Println("3. Event type: Message")
+
+		var info string
+
+		info += "{\"id\":\"" + evt.Info.ID + "\""
+		info += ",\"messageSource\":\"" + evt.Info.MessageSource.SourceString() + "\""
+		if evt.Info.Type != "" {
+			info += ",\"type\":\"" + evt.Info.Type + "\""
+		}
+		info += ",\"pushName\":\"" + evt.Info.PushName + "\""
+		info += ",\"timestamp\":" + strconv.FormatInt(evt.Info.Timestamp.Unix(), 10)
+		if evt.Info.Category != "" {
+			info += ",\"category\":\"" + evt.Info.Category + "\""
+		}
+		info += ",\"multicast\":" + strconv.FormatBool(evt.Info.Multicast)
+		if evt.Info.MediaType != "" {
+			info += ",\"mediaType\": \"" + evt.Info.MediaType + "\""
+		}
+		info += ",\"flags\":["
+
+		var flags []string
+		if evt.IsEphemeral {
+			flags = append(flags, "\"ephemeral\"")
+		}
+		if evt.IsViewOnce {
+			flags = append(flags, "\"viewOnce\"")
+		}
+		if evt.IsViewOnceV2 {
+			flags = append(flags, "\"viewOnceV2\"")
+		}
+		if evt.IsDocumentWithCaption {
+			flags = append(flags, "\"documentWithCaption\"")
+		}
+		if evt.IsEdit {
+			flags = append(flags, "\"edit\"")
+		}
+		info += strings.Join(flags, ",")
+		info += "]"
+
+		if evt.Message.ImageMessage != nil || evt.Message.AudioMessage != nil || evt.Message.VideoMessage != nil || evt.Message.DocumentMessage != nil || evt.Message.StickerMessage != nil {
+			if len(*MediaPath) > 0 {
+				var mimetype string
+				var media_path_subdir string
+				var data []byte
+				var err error
+				switch {
+				case evt.Message.ImageMessage != nil:
+					mimetype = evt.Message.ImageMessage.GetMimetype()
+					data, err = wac.wpClient.Download(evt.Message.ImageMessage)
+					media_path_subdir = "images"
+				case evt.Message.AudioMessage != nil:
+					mimetype = evt.Message.AudioMessage.GetMimetype()
+					data, err = wac.wpClient.Download(evt.Message.AudioMessage)
+					media_path_subdir = "audios"
+				case evt.Message.VideoMessage != nil:
+					mimetype = evt.Message.VideoMessage.GetMimetype()
+					data, err = wac.wpClient.Download(evt.Message.VideoMessage)
+					media_path_subdir = "videos"
+				case evt.Message.DocumentMessage != nil:
+					mimetype = evt.Message.DocumentMessage.GetMimetype()
+					data, err = wac.wpClient.Download(evt.Message.DocumentMessage)
+					media_path_subdir = "documents"
+				case evt.Message.StickerMessage != nil:
+					mimetype = evt.Message.StickerMessage.GetMimetype()
+					data, err = wac.wpClient.Download(evt.Message.StickerMessage)
+					media_path_subdir = "stickers"
+				}
+
+				if err != nil {
+					fmt.Printf("Failed to download media: %v", err)
+				} else {
+					exts, _ := mime.ExtensionsByType(mimetype)
+					path := fmt.Sprintf("%s/%s/%s%s", MediaPath, media_path_subdir, evt.Info.ID, exts[0])
+
+					err = os.WriteFile(path, data, 0600)
+					if err != nil {
+						fmt.Printf("Failed to save media: %v", err)
+					} else {
+						info += ",\"filepath\":\"" + path + "\""
+					}
+				}
+			}
+		}
+
+		info += "}"
+
+		var m, _ = protojson.Marshal(evt.Message)
+		var message_info string = string(m)
+		json_str := "{\"eventType\":\"Message\",\"info\":" + info + ",\"message\":" + message_info + "}"
+
+		wac.addEventToQueue(json_str)
+
+	case *events.Receipt:
+		if evt.Type == types.ReceiptTypeRead || evt.Type == types.ReceiptTypeReadSelf {
+			json_str := "{\"eventType\":\"MessageRead\",\"messageIDs\":["
+
+			messageIDsLen := len(evt.MessageIDs)
+			for key, value := range evt.MessageIDs {
+				json_str += "\"" + value + "\""
+				if key < messageIDsLen-1 {
+					json_str += ","
+				}
+			}
+			json_str += "],\"sourceString\":\"" + evt.SourceString() + "\",\"timestamp\":" + strconv.FormatInt(evt.Timestamp.Unix(), 10) + "}"
+
+			wac.addEventToQueue(json_str)
+			//log.Infof("%v was read by %s at %s", evt.MessageIDs, evt.SourceString(), evt.Timestamp)
+		} else if evt.Type == types.ReceiptTypeDelivered {
+			json_str := "{\"eventType\":\"MessageDelivered\",\"messageID\":\"" + evt.MessageIDs[0] + "\",\"sourceString\":\"" + evt.SourceString() + "\",\"timestamp\":" + strconv.FormatInt(evt.Timestamp.Unix(), 10) + "}"
+			wac.addEventToQueue(json_str)
+			//log.Infof("%s was delivered to %s at %s", evt.MessageIDs[0], evt.SourceString(), evt.Timestamp)
+		}
+	case *events.Presence:
+		var json_str string
+		var online bool = !evt.Unavailable
+
+		json_str += "{\"eventType\":\"Presence\",\"from\":\"" + evt.From.String() + "\",\"online\":" + strconv.FormatBool(online)
+
+		if evt.Unavailable {
+			if !evt.LastSeen.IsZero() {
+				json_str += ",\"lastSeen\":" + strconv.FormatInt(evt.LastSeen.Unix(), 10)
+			}
+		}
+		json_str += "}"
+		wac.addEventToQueue(json_str)
+
+	case *events.HistorySync:
+		id := atomic.AddInt32(&wac.historySyncID, 1)
+		fileName := fmt.Sprintf("history-%d-%d.json", wac.startupTime, id)
+		file, err := os.OpenFile(fileName, os.O_WRONLY|os.O_CREATE, 0600)
+		if err != nil {
+			//log.Errorf("Failed to open file to write history sync: %v", err)
+			return
+		}
+		enc := json.NewEncoder(file)
+		enc.SetIndent("", "  ")
+		err = enc.Encode(evt.Data)
+		if err != nil {
+			//log.Errorf("Failed to write history sync: %v", err)
+			return
+		}
+		//log.Infof("Wrote history sync to %s", fileName)
+		_ = file.Close()
+
+		wac.addEventToQueue("{\"eventType\":\"HistorySync\",\"filename\":\"" + fileName + "\"}")
+	case *events.AppState:
+		//log.Debugf("App state event: %+v / %+v", evt.Index, evt.SyncActionValue)
+		var json_str string = "{\"eventType\":\"AppState\",\"index\":["
+		var event_index_size int = len(evt.Index)
+		for key, value := range evt.Index {
+			json_str += "\"" + value + "\""
+			if key < event_index_size-1 {
+				json_str += ","
+			}
+		}
+		var protobuf_json, _ = protojson.Marshal(evt.SyncActionValue)
+		var protobuf_json_str string = string(protobuf_json)
+		// json_str := "{\"eventType\":\"Message\",\"info\":"+info+",\"message\":"+message_info+"}"
+
+		json_str += "],\"syncActionValue\":" + protobuf_json_str + "}"
+		// json_str += "],\"syncActionValue\":"+evt.SyncActionValue.String()+"}"
+
+		wac.addEventToQueue(json_str)
+
+	case *events.KeepAliveTimeout:
+		//log.Debugf("Keepalive timeout event: %+v", evt)
+		var json_str string = "{\"eventType\":\"KeepAliveTimeout\",\"errorCount\":" + strconv.FormatInt(int64(evt.ErrorCount), 10) + ",\"lastSuccess\":" + strconv.FormatInt(evt.LastSuccess.Unix(), 10) + "}"
+		wac.addEventToQueue(json_str)
+	case *events.KeepAliveRestored:
+		//log.Debugf("Keepalive restored")
+		wac.addEventToQueue("{\"eventType\":\"KeepAliveRestored\"}")
+	case *events.Blocklist:
+		wac.addEventToQueue("{\"eventType\":\"Blocklist\"}")
+		//log.Infof("Blocklist event: %+v", evt)
+	default:
+		// fmt.Println("Missing event")
+		// fmt.Printf("I don't know about type %T!\n", evt)
+	}
+}
+
+func WhatsAppListen(wsConn *websocket.Conn, jid string) (*WhatsAppConfiguration, error) {
+	if WhatsAppClient[jid] != nil {
+		var err error
+
+		// Make Sure WhatsApp Client is OK
+		err = WhatsAppIsClientOK(jid)
+		if err != nil {
+			return nil, err
+		}
+
+		wac := &WhatsAppConfiguration{
+			wpClient:      WhatsAppClient[jid],
+			startupTime:   time.Now().Unix(),
+			historySyncID: 0,
+			wsConn:        wsConn,
+		}
+
+		// Start Listening for WhatsApp Messages
+		wac.eventHandlerId = WhatsAppClient[jid].AddEventHandler(wac.handler)
+		log.Print(nil).Infof("WhatsApp Client %s is Listening for Messages (eventHandlerId: %s)", jid, wac.eventHandlerId)
+		return wac, nil
+	}
+
+	// Return Error WhatsApp Client is not Valid
+	return nil, errors.New("WhatsApp Client is not Valid")
+}
+
+var upgrader = websocket.Upgrader{
+	ReadBufferSize:  1024,
+	WriteBufferSize: 1024,
+	CheckOrigin: func(r *http.Request) bool {
+		return true
+	},
 }

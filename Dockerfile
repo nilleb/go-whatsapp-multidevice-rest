@@ -31,5 +31,5 @@ COPY --from=go-builder /usr/src/app/main ./main
 
 EXPOSE 3000
 
-VOLUME ["/usr/app/${SERVICE_NAME}/dbs"]
+VOLUME ["/usr/app/${SERVICE_NAME}/dbs", "/usr/app/${SERVICE_NAME}/media"]
 CMD ["main"]

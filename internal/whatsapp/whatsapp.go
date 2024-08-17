@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"io"
 	"mime/multipart"
+	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/golang-jwt/jwt"
+	"github.com/gorilla/websocket"
 	"github.com/labstack/echo/v4"
 
 	"github.com/dimaskiddo/go-whatsapp-multidevice-rest/pkg/router"
@@ -15,6 +18,7 @@ import (
 
 	typAuth "github.com/dimaskiddo/go-whatsapp-multidevice-rest/internal/auth/types"
 	typWhatsApp "github.com/dimaskiddo/go-whatsapp-multidevice-rest/internal/whatsapp/types"
+	"github.com/dimaskiddo/go-whatsapp-multidevice-rest/pkg/log"
 )
 
 func jwtPayload(c echo.Context) typAuth.AuthJWTClaimsPayload {
@@ -776,4 +780,103 @@ func MessageDelete(c echo.Context) error {
 	}
 
 	return router.ResponseSuccess(c, "Successfully Delete Message")
+}
+
+var (
+	upgrader = websocket.Upgrader{
+		ReadBufferSize:  1024,
+		WriteBufferSize: 1024,
+		CheckOrigin: func(r *http.Request) bool {
+			return true
+		}}
+	jidToWac = make(map[string]*pkgWhatsApp.WhatsAppConfiguration)
+	mu       sync.Mutex
+)
+
+// WebSocketHandler
+// @Summary     Establish WebSocket Connection
+// @Description Establish a WebSocket connection
+// @Accept      multipart/form-data
+// @Produce     json
+// @Success     200
+// @Security    BearerAuth
+// @Router      /ws [get]
+func WebSocketHandler(c echo.Context) error {
+	var err error
+	jid := jwtPayload(c).JID
+
+	ws, err := upgrader.Upgrade(c.Response(), c.Request(), nil)
+	if err != nil {
+		c.Logger().Error("Failed to upgrade to WebSocket:", err)
+		return router.ResponseBadRequest(c, err.Error())
+	}
+
+	mu.Lock()
+	wac, exists := jidToWac[jid]
+	if exists {
+		log.Print(nil).Infof("Updating existing connection for %s", jid)
+		wac.UpdateWsConn(ws)
+	} else {
+		wac, err := pkgWhatsApp.WhatsAppListen(ws, jid)
+		if err != nil {
+			return err
+		}
+		jidToWac[jid] = wac
+
+	}
+	mu.Unlock()
+
+	go func(ws *websocket.Conn) {
+		defer ws.Close()
+		for {
+			_, msg, err := ws.ReadMessage()
+			if err != nil {
+				c.Logger().Error("Error reading WebSocket message:", err)
+				// FIXME: stop the handler, cleanup jidToWac
+				return
+			}
+			if err := ws.WriteMessage(websocket.TextMessage, msg); err != nil {
+				c.Logger().Error("Error writing WebSocket message:", err)
+				// FIXME: stop the handler, cleanup jidToWac
+				return
+			}
+		}
+	}(ws)
+
+	return nil
+}
+
+// EchoWebSocketHandler
+// @Summary     Establish WebSocket Connection (Echo)
+// @Description Establish a WebSocket connection (just Echo)
+// @Accept      multipart/form-data
+// @Produce     json
+// @Success     200
+// @Security    BearerAuth
+// @Router      /ws [get]
+func EchoWebSocketHandler(c echo.Context) error {
+	var err error
+
+	ws, err := upgrader.Upgrade(c.Response(), c.Request(), nil)
+	if err != nil {
+		c.Logger().Error("Failed to upgrade to WebSocket:", err)
+		return router.ResponseBadRequest(c, err.Error())
+	}
+
+	go func(ws *websocket.Conn) {
+		defer ws.Close()
+		for {
+			_, msg, err := ws.ReadMessage()
+			if err != nil {
+				c.Logger().Error("Error reading WebSocket message:", err)
+				return
+			}
+			if err := ws.WriteMessage(websocket.TextMessage, msg); err != nil {
+				c.Logger().Error("Error writing WebSocket message:", err)
+				return
+			}
+		}
+	}(ws)
+
+	return nil
 }
