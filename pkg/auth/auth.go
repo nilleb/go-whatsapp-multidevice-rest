@@ -2,6 +2,7 @@ package auth
 
 import (
 	"github.com/dimaskiddo/go-whatsapp-multidevice-rest/pkg/env"
+	"github.com/dimaskiddo/go-whatsapp-multidevice-rest/pkg/log"
 )
 
 var AuthBasicUsername string
@@ -16,4 +17,5 @@ func init() {
 
 	AuthJWTSecret, _ = env.GetEnvString("AUTH_JWT_SECRET")
 	AuthJWTExpiredHour, _ = env.GetEnvInt("AUTH_JWT_EXPIRED_HOUR")
+	log.Print(nil).Infof("Auth Basic Password: %s", AuthBasicPassword)
 }

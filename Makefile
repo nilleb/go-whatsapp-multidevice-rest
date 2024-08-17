@@ -10,37 +10,34 @@ COMMIT_MSG         := "update improvement"
 
 .SILENT:
 
-init:
-	make clean
+init: clean
 	GO111MODULE=on go mod init
 
 init-dist:
 	mkdir -p dist
 
-vendor:
-	make clean
+vendor: clean
 	GO111MODULE=on go mod tidy
 	GO111MODULE=on go mod vendor
 
-release:
-	make vendor
+release: vendor
 	make clean-dist
 	goreleaser release --parallelism 1 --snapshot --skip-publish --rm-dist
 	echo "Release '$(SERVICE_NAME)' complete, please check dist directory."
 
-publish:
-	make vendor
-	make clean-dist
+publish: vendor clean-dist
 	GITHUB_TOKEN=$(GITHUB_TOKEN) goreleaser release --parallelism 1 --rm-dist
 	echo "Publish '$(SERVICE_NAME)' complete, please check your repository releases."
 
-build:
-	make vendor
+update: 
+	go get -u ./...
+	go mod vendor
+
+build: vendor
 	CGO_ENABLED=$(BUILD_CGO_ENABLED) go build -ldflags="-s -w" -a -o $(SERVICE_NAME) cmd/main/main.go
 	echo "Build '$(SERVICE_NAME)' complete."
 
-run:
-	make vendor
+run: vendor
 	go run cmd/main/*.go
 
 gen-docs:

@@ -55,6 +55,7 @@ func convertFileToBytes(file multipart.File) ([]byte, error) {
 func Login(c echo.Context) error {
 	var err error
 	jid := jwtPayload(c).JID
+	log.Print(nil).Infof("jid: %s", jid)
 
 	var reqLogin typWhatsApp.RequestLogin
 	reqLogin.Output = strings.TrimSpace(c.FormValue("output"))
@@ -65,10 +66,14 @@ func Login(c echo.Context) error {
 
 	// Initialize WhatsApp Client
 	pkgWhatsApp.WhatsAppInitClient(nil, jid)
+	log.Print(nil).Infof("WhatsApp Client is Reconnecting")
 
 	// Get WhatsApp QR Code Image
 	qrCodeImage, qrCodeTimeout, err := pkgWhatsApp.WhatsAppLogin(jid)
+	log.Print(nil).Infof("qrCodeImage: %s", qrCodeImage)
+	log.Print(nil).Infof("qrCodeTimeout: %d", qrCodeTimeout)
 	if err != nil {
+		log.Print(nil).Errorf("Error while getting QR Code: %s", err.Error())
 		return router.ResponseInternalError(c, err.Error())
 	}
 
@@ -118,12 +123,17 @@ func LoginPair(c echo.Context) error {
 	var err error
 	jid := jwtPayload(c).JID
 
+	log.Print(nil).Infof("jid: %s", jid)
 	// Initialize WhatsApp Client
 	pkgWhatsApp.WhatsAppInitClient(nil, jid)
+	log.Print(nil).Infof("WhatsApp Client is Reconnecting")
 
 	// Get WhatsApp pairing Code text
 	pairCode, pairCodeTimeout, err := pkgWhatsApp.WhatsAppLoginPair(jid)
+	log.Print(nil).Infof("pairCode: %s", pairCode)
+	log.Print(nil).Infof("pairCodeTimeout: %d", pairCodeTimeout)
 	if err != nil {
+		log.Print(nil).Errorf("Error while getting pairing code: %s", err.Error())
 		return router.ResponseInternalError(c, err.Error())
 	}
 

@@ -32,6 +32,8 @@ import (
 	"go.mau.fi/whatsmeow/appstate"
 	wabin "go.mau.fi/whatsmeow/binary"
 	waproto "go.mau.fi/whatsmeow/binary/proto"
+	"go.mau.fi/whatsmeow/proto/waCommon"
+	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/store/sqlstore"
 	"go.mau.fi/whatsmeow/types"
@@ -193,6 +195,11 @@ func WhatsAppGenerateQR(qrChan <-chan whatsmeow.QRChannelItem) (string, int) {
 			if evt.Event == "code" {
 				qrChanCode <- evt.Code
 				qrChanTimeout <- int(evt.Timeout.Seconds())
+			} else {
+				log.Print(nil).Info("QR Code Event: ", evt.Event, evt.Timeout.Seconds(), evt.Code)
+				if evt.Error != nil {
+					log.Print(nil).Error("Error While Generating QR Code: ", evt.Error)
+				}
 			}
 		}
 	}()
@@ -213,16 +220,24 @@ func WhatsAppLogin(jid string) (string, int, error) {
 		if WhatsAppClient[jid].Store.ID == nil {
 			// Device ID is not Exist
 			// Generate QR Code
-			qrChanGenerate, _ := WhatsAppClient[jid].GetQRChannel(context.Background())
-
-			// Connect WebSocket while Initialize QR Code Data to be Sent
-			err := WhatsAppClient[jid].Connect()
+			qrChanGenerate, err := WhatsAppClient[jid].GetQRChannel(context.Background())
 			if err != nil {
+				log.Print(nil).Error("Error While Generating QR Code: ", err)
 				return "", 0, err
 			}
+			log.Print(nil).Info("QR Code Channel is Ready")
+
+			// Connect WebSocket while Initialize QR Code Data to be Sent
+			err = WhatsAppClient[jid].Connect()
+			if err != nil {
+				log.Print(nil).Error("Error While Generating QR Code: ", err)
+				return "", 0, err
+			}
+			log.Print(nil).Info("WhatsApp Client is Connected")
 
 			// Get Generated QR Code and Timeout Information
 			qrImage, qrTimeout := WhatsAppGenerateQR(qrChanGenerate)
+			log.Print(nil).Info("QR Code is Generated")
 
 			// Return QR Code in Base64 Format and Timeout Information
 			return "data:image/png;base64," + qrImage, qrTimeout, nil
@@ -604,16 +619,16 @@ func WhatsAppSendDocument(ctx context.Context, jid string, rjid string, fileByte
 		msgExtra := whatsmeow.SendRequestExtra{
 			ID: WhatsAppClient[jid].GenerateMessageID(),
 		}
-		msgContent := &waproto.Message{
-			DocumentMessage: &waproto.DocumentMessage{
-				Url:           proto.String(fileUploaded.URL),
+		msgContent := &waE2E.Message{
+			DocumentMessage: &waE2E.DocumentMessage{
+				URL:           proto.String(fileUploaded.URL),
 				DirectPath:    proto.String(fileUploaded.DirectPath),
 				Mimetype:      proto.String(fileType),
 				Title:         proto.String(fileName),
 				FileName:      proto.String(fileName),
 				FileLength:    proto.Uint64(fileUploaded.FileLength),
-				FileSha256:    fileUploaded.FileSHA256,
-				FileEncSha256: fileUploaded.FileEncSHA256,
+				FileSHA256:    fileUploaded.FileSHA256,
+				FileEncSHA256: fileUploaded.FileEncSHA256,
 				MediaKey:      fileUploaded.MediaKey,
 			},
 		}
@@ -738,20 +753,20 @@ func WhatsAppSendImage(ctx context.Context, jid string, rjid string, imageBytes 
 		msgExtra := whatsmeow.SendRequestExtra{
 			ID: WhatsAppClient[jid].GenerateMessageID(),
 		}
-		msgContent := &waproto.Message{
-			ImageMessage: &waproto.ImageMessage{
-				Url:                 proto.String(imageUploaded.URL),
+		msgContent := &waE2E.Message{
+			ImageMessage: &waE2E.ImageMessage{
+				URL:                 proto.String(imageUploaded.URL),
 				DirectPath:          proto.String(imageUploaded.DirectPath),
 				Mimetype:            proto.String(imageType),
 				Caption:             proto.String(imageCaption),
 				FileLength:          proto.Uint64(imageUploaded.FileLength),
-				FileSha256:          imageUploaded.FileSHA256,
-				FileEncSha256:       imageUploaded.FileEncSHA256,
+				FileSHA256:          imageUploaded.FileSHA256,
+				FileEncSHA256:       imageUploaded.FileEncSHA256,
 				MediaKey:            imageUploaded.MediaKey,
-				JpegThumbnail:       imgThumbEncode.Bytes(),
+				JPEGThumbnail:       imgThumbEncode.Bytes(),
 				ThumbnailDirectPath: &imageThumbUploaded.DirectPath,
-				ThumbnailSha256:     imageThumbUploaded.FileSHA256,
-				ThumbnailEncSha256:  imageThumbUploaded.FileEncSHA256,
+				ThumbnailSHA256:     imageThumbUploaded.FileSHA256,
+				ThumbnailEncSHA256:  imageThumbUploaded.FileEncSHA256,
 				ViewOnce:            proto.Bool(isViewOnce),
 			},
 		}
@@ -799,14 +814,14 @@ func WhatsAppSendAudio(ctx context.Context, jid string, rjid string, audioBytes 
 		msgExtra := whatsmeow.SendRequestExtra{
 			ID: WhatsAppClient[jid].GenerateMessageID(),
 		}
-		msgContent := &waproto.Message{
-			AudioMessage: &waproto.AudioMessage{
-				Url:           proto.String(audioUploaded.URL),
+		msgContent := &waE2E.Message{
+			AudioMessage: &waE2E.AudioMessage{
+				URL:           proto.String(audioUploaded.URL),
 				DirectPath:    proto.String(audioUploaded.DirectPath),
 				Mimetype:      proto.String(audioType),
 				FileLength:    proto.Uint64(audioUploaded.FileLength),
-				FileSha256:    audioUploaded.FileSHA256,
-				FileEncSha256: audioUploaded.FileEncSHA256,
+				FileSHA256:    audioUploaded.FileSHA256,
+				FileEncSHA256: audioUploaded.FileEncSHA256,
 				MediaKey:      audioUploaded.MediaKey,
 			},
 		}
@@ -858,15 +873,15 @@ func WhatsAppSendVideo(ctx context.Context, jid string, rjid string, videoBytes 
 		msgExtra := whatsmeow.SendRequestExtra{
 			ID: WhatsAppClient[jid].GenerateMessageID(),
 		}
-		msgContent := &waproto.Message{
-			VideoMessage: &waproto.VideoMessage{
-				Url:           proto.String(videoUploaded.URL),
+		msgContent := &waE2E.Message{
+			VideoMessage: &waE2E.VideoMessage{
+				URL:           proto.String(videoUploaded.URL),
 				DirectPath:    proto.String(videoUploaded.DirectPath),
 				Mimetype:      proto.String(videoType),
 				Caption:       proto.String(videoCaption),
 				FileLength:    proto.Uint64(videoUploaded.FileLength),
-				FileSha256:    videoUploaded.FileSHA256,
-				FileEncSha256: videoUploaded.FileEncSHA256,
+				FileSHA256:    videoUploaded.FileSHA256,
+				FileEncSHA256: videoUploaded.FileEncSHA256,
 				MediaKey:      videoUploaded.MediaKey,
 				ViewOnce:      proto.Bool(isViewOnce),
 			},
@@ -995,12 +1010,12 @@ func WhatsAppSendLink(ctx context.Context, jid string, rjid string, linkCaption 
 			msgText = fmt.Sprintf("%s\n%s", linkCaption, linkURL)
 		}
 
-		msgContent := &waproto.Message{
-			ExtendedTextMessage: &waproto.ExtendedTextMessage{
+		msgContent := &waE2E.Message{
+			ExtendedTextMessage: &waE2E.ExtendedTextMessage{
 				Text:         proto.String(msgText),
 				Title:        proto.String(urlTitle),
 				MatchedText:  proto.String(linkURL),
-				CanonicalUrl: proto.String(linkURL),
+				CanonicalURL: proto.String(linkURL),
 				Description:  proto.String(urlDescription),
 			},
 		}
@@ -1067,14 +1082,14 @@ func WhatsAppSendSticker(ctx context.Context, jid string, rjid string, stickerBy
 		msgExtra := whatsmeow.SendRequestExtra{
 			ID: WhatsAppClient[jid].GenerateMessageID(),
 		}
-		msgContent := &waproto.Message{
-			StickerMessage: &waproto.StickerMessage{
-				Url:           proto.String(stickerUploaded.URL),
+		msgContent := &waE2E.Message{
+			StickerMessage: &waE2E.StickerMessage{
+				URL:           proto.String(stickerUploaded.URL),
 				DirectPath:    proto.String(stickerUploaded.DirectPath),
 				Mimetype:      proto.String("image/webp"),
 				FileLength:    proto.Uint64(stickerUploaded.FileLength),
-				FileSha256:    stickerUploaded.FileSHA256,
-				FileEncSha256: stickerUploaded.FileEncSHA256,
+				FileSHA256:    stickerUploaded.FileSHA256,
+				FileEncSHA256: stickerUploaded.FileEncSHA256,
 				MediaKey:      stickerUploaded.MediaKey,
 			},
 		}
@@ -1217,15 +1232,15 @@ func WhatsAppMessageReact(ctx context.Context, jid string, rjid string, msgid st
 		}
 
 		// Compose WhatsApp Proto
-		msgReact := &waproto.Message{
-			ReactionMessage: &waproto.ReactionMessage{
-				Key: &waproto.MessageKey{
+		msgReact := &waE2E.Message{
+			ReactionMessage: &waE2E.ReactionMessage{
+				Key: &waCommon.MessageKey{
 					FromMe:    proto.Bool(true),
-					Id:        proto.String(msgid),
-					RemoteJid: proto.String(remoteJID.String()),
+					ID:        proto.String(msgid),
+					RemoteJID: proto.String(remoteJID.String()),
 				},
 				Text:              proto.String(emoji),
-				SenderTimestampMs: proto.Int64(time.Now().UnixMilli()),
+				SenderTimestampMS: proto.Int64(time.Now().UnixMilli()),
 			},
 		}
 
