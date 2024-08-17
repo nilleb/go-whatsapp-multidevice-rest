@@ -1,9 +1,9 @@
 BUILD_CGO_ENABLED  := 0
 SERVICE_NAME       := go-whatsapp-multidevice-rest
 SERVICE_PORT       := 3000
-IMAGE_NAME         := go-whatsapp-multidevice-rest
+IMAGE_NAME         := nillebco/go-whatsapp-multidevice-rest
 IMAGE_TAG          := latest
-REBASE_URL         := "github.com/dimaskiddo/go-whatsapp-multidevice-rest"
+REBASE_URL         := "github.com/nilleb/go-whatsapp-multidevice-rest"
 COMMIT_MSG         := "update improvement"
 
 .PHONY:

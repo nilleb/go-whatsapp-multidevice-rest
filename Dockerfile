@@ -21,6 +21,8 @@ ENV PATH $PATH:/usr/app/${SERVICE_NAME}
 
 WORKDIR /usr/app/${SERVICE_NAME}
 
+RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+
 RUN mkdir -p {.bin/webp,dbs} \
     && chmod 775 {.bin/webp,dbs}
 
