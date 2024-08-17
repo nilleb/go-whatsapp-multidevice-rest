@@ -23,8 +23,8 @@ WORKDIR /usr/app/${SERVICE_NAME}
 
 RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
 
-RUN mkdir -p {.bin/webp,dbs} \
-    && chmod 775 {.bin/webp,dbs}
+RUN mkdir -p {.bin/webp,dbs,media} \
+    && chmod 775 {.bin/webp,dbs,media}
 
 COPY --from=go-builder /usr/src/app/.env.example ./.env
 COPY --from=go-builder /usr/src/app/main ./main
