@@ -1,6 +1,6 @@
 # Builder Image
 # ---------------------------------------------------
-FROM dimaskiddo/alpine:go-1.21 AS go-builder
+FROM golang:1.22.6-bullseye AS go-builder
 
 WORKDIR /usr/src/app
 
@@ -12,8 +12,8 @@ RUN go mod download \
 
 # Final Image
 # ---------------------------------------------------
-FROM dimaskiddo/alpine:base-glibc
-MAINTAINER Dimas Restu Hidayanto <dimas.restu@student.upi.edu>
+FROM debian:bullseye-slim
+LABEL maintainer="nilleb <ivo@nilleb.com>"
 
 ARG SERVICE_NAME="go-whatsapp-multidevice-rest"
 
