@@ -841,13 +841,20 @@ func WebSocketHandler(c echo.Context) error {
 		for {
 			_, msg, err := ws.ReadMessage()
 			if err != nil {
-				c.Logger().Error("Error reading WebSocket message:", err)
-				// FIXME: stop the handler, cleanup jidToWac
+				log.Print(c).Error("Error writing WebSocket message:", err)
+				pkgWhatsApp.WhatsAppRemoveEventHandler(jid, wac)
+				// remove wac from jidToWac
+				mu.Lock()
+				delete(jidToWac, jid)
+				mu.Unlock()
 				return
 			}
 			if err := ws.WriteMessage(websocket.TextMessage, msg); err != nil {
-				c.Logger().Error("Error writing WebSocket message:", err)
-				// FIXME: stop the handler, cleanup jidToWac
+				log.Print(c).Error("Error writing WebSocket message:", err)
+				pkgWhatsApp.WhatsAppRemoveEventHandler(jid, wac)
+				mu.Lock()
+				delete(jidToWac, jid)
+				mu.Unlock()
 				return
 			}
 		}
