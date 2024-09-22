@@ -837,13 +837,29 @@ func WebSocketHandler(c echo.Context) error {
 	mu.Unlock()
 
 	go func(ws *websocket.Conn) {
-		defer ws.Close()
+		defer func() {
+			// Send a close message to the client
+			err := ws.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
+			if err != nil {
+				log.Print(c).Error("Error sending close message:", err)
+				return
+			}
+
+			// Wait for the client to acknowledge the close message
+			_, _, err = ws.ReadMessage()
+			if err != nil && websocket.IsUnexpectedCloseError(err, websocket.CloseNormalClosure) {
+				log.Print(c).Error("Error reading close acknowledgment:", err)
+			}
+
+			// Close the WebSocket connection
+			ws.Close()
+		}()
+
 		for {
 			_, msg, err := ws.ReadMessage()
 			if err != nil {
 				log.Print(c).Error("Error writing WebSocket message:", err)
 				pkgWhatsApp.WhatsAppRemoveEventHandler(jid, wac)
-				// remove wac from jidToWac
 				mu.Lock()
 				delete(jidToWac, jid)
 				mu.Unlock()
