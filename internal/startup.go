@@ -11,11 +11,15 @@ func Startup() {
 	// Load All WhatsApp Client Devices from Datastore
 	devices, err := pkgWhatsApp.WhatsAppDatastore.GetAllDevices()
 	if err != nil {
-		log.Print(nil).Error("Failed to Load WhatsApp Client Devices from Datastore")
+		log.Print(nil).Error("Failed to Load WhatsApp Client Devices from Datastore", err)
 	}
+
+	log.Print(nil).Infof("Found %d devices in Datastore.\n", len(devices))
 
 	// Do Reconnect for Every Device in Datastore
 	for _, device := range devices {
+		log.Print(nil).Infof("reconnecting device %v\n", device.ID.User)
+
 		// Get JID from Datastore
 		jid := pkgWhatsApp.WhatsAppDecomposeJID(device.ID.User)
 
@@ -34,4 +38,8 @@ func Startup() {
 			log.Print(nil).Error(err.Error())
 		}
 	}
+}
+
+func GracefulShutdown() {
+	pkgWhatsApp.Close()
 }

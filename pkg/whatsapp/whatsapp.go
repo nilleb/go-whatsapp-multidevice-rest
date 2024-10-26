@@ -33,6 +33,7 @@ import (
 	wabin "go.mau.fi/whatsmeow/binary"
 	waproto "go.mau.fi/whatsmeow/binary/proto"
 	"go.mau.fi/whatsmeow/proto/waCommon"
+	waCompanionReg "go.mau.fi/whatsmeow/proto/waCompanionReg"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/store/sqlstore"
@@ -72,14 +73,27 @@ func init() {
 		MediaPath = &mediaPath
 	}
 
-	datastore, err := sqlstore.New(dbType, dbURI, nil)
+	log.Print(nil).Infof("Connecting WhatsApp Client Datastore %s at %s", dbType, dbURI)
+
+	datastore, err := sqlstore.New(dbType, dbURI, log.PrintWaLog(nil))
+	//db, err := sql.Open(dbType, dbURI)
+	//datastore := sqlstore.NewWithDB(db, dbType, log.PrintWaLog(nil))
+
 	if err != nil {
-		log.Print(nil).Fatal("Error Connect WhatsApp Client Datastore")
+		log.Print(nil).Fatal("Error Connect WhatsApp Client Datastore", err)
 	}
 
 	WhatsAppClientProxyURL, _ = env.GetEnvString("WHATSAPP_CLIENT_PROXY_URL")
 
 	WhatsAppDatastore = datastore
+}
+
+func Close() error {
+	if WhatsAppDatastore != nil {
+		err := WhatsAppDatastore.Close()
+		return err
+	}
+	return errors.New("WhatsApp Datastore is not Initialized")
 }
 
 func WhatsAppInitClient(device *store.Device, jid string) {
@@ -125,52 +139,49 @@ func WhatsAppInitClient(device *store.Device, jid string) {
 
 		// Set WhatsApp Client Auto Trust Identity
 		WhatsAppClient[jid].AutoTrustIdentity = true
-
-		// Disable Self Broadcast
-		WhatsAppClient[jid].DontSendSelfBroadcast = true
 	}
 }
 
 func WhatsAppGetUserAgent(agentType string) waproto.DeviceProps_PlatformType {
 	switch strings.ToLower(agentType) {
 	case "desktop":
-		return waproto.DeviceProps_DESKTOP
+		return waCompanionReg.DeviceProps_DESKTOP
 	case "mac":
-		return waproto.DeviceProps_CATALINA
+		return waCompanionReg.DeviceProps_CATALINA
 	case "android":
-		return waproto.DeviceProps_ANDROID_AMBIGUOUS
+		return waCompanionReg.DeviceProps_ANDROID_AMBIGUOUS
 	case "android-phone":
-		return waproto.DeviceProps_ANDROID_PHONE
+		return waCompanionReg.DeviceProps_ANDROID_PHONE
 	case "andorid-tablet":
-		return waproto.DeviceProps_ANDROID_TABLET
+		return waCompanionReg.DeviceProps_ANDROID_TABLET
 	case "ios-phone":
-		return waproto.DeviceProps_IOS_PHONE
+		return waCompanionReg.DeviceProps_IOS_PHONE
 	case "ios-catalyst":
-		return waproto.DeviceProps_IOS_CATALYST
+		return waCompanionReg.DeviceProps_IOS_CATALYST
 	case "ipad":
-		return waproto.DeviceProps_IPAD
+		return waCompanionReg.DeviceProps_IPAD
 	case "wearos":
-		return waproto.DeviceProps_WEAR_OS
+		return waCompanionReg.DeviceProps_WEAR_OS
 	case "ie":
-		return waproto.DeviceProps_IE
+		return waCompanionReg.DeviceProps_IE
 	case "edge":
-		return waproto.DeviceProps_EDGE
+		return waCompanionReg.DeviceProps_EDGE
 	case "chrome":
-		return waproto.DeviceProps_CHROME
+		return waCompanionReg.DeviceProps_CHROME
 	case "safari":
-		return waproto.DeviceProps_SAFARI
+		return waCompanionReg.DeviceProps_SAFARI
 	case "firefox":
-		return waproto.DeviceProps_FIREFOX
+		return waCompanionReg.DeviceProps_FIREFOX
 	case "opera":
-		return waproto.DeviceProps_OPERA
+		return waCompanionReg.DeviceProps_OPERA
 	case "uwp":
-		return waproto.DeviceProps_UWP
+		return waCompanionReg.DeviceProps_UWP
 	case "aloha":
-		return waproto.DeviceProps_ALOHA
+		return waCompanionReg.DeviceProps_ALOHA
 	case "tv-tcl":
-		return waproto.DeviceProps_TCL_TV
+		return waCompanionReg.DeviceProps_TCL_TV
 	default:
-		return waproto.DeviceProps_UNKNOWN
+		return waCompanionReg.DeviceProps_UNKNOWN
 	}
 }
 
@@ -214,7 +225,7 @@ func WhatsAppGenerateQR(qrChan <-chan whatsmeow.QRChannelItem) (string, int) {
 
 func checkWhatsAppClient(jid string) error {
 	if WhatsAppClient[jid] == nil {
-		debugWhatsAppClientMap()
+		debugWhatsAppClientMap(jid)
 		return errors.New("WhatsApp Client is not Valid")
 	}
 	return nil
@@ -495,7 +506,7 @@ func WhatsAppCheckRegistered(jid string, id string) error {
 	return nil
 }
 
-func WhatsAppSendText(ctx context.Context, jid string, rjid string, message string) (string, error) {
+func WhatsAppSendText(ctx context.Context, jid string, rjid string, message string, repliedMessageId string, replyToJid string) (string, error) {
 	err := checkWhatsAppClient(jid)
 	if err != nil {
 		return "", err
@@ -525,17 +536,30 @@ func WhatsAppSendText(ctx context.Context, jid string, rjid string, message stri
 	msgExtra := whatsmeow.SendRequestExtra{
 		ID: WhatsAppClient[jid].GenerateMessageID(),
 	}
-	msgContent := &waproto.Message{
-		Conversation: proto.String(message),
+	var extendedMessage *waE2E.ExtendedTextMessage
+	if repliedMessageId != "" {
+		extendedMessage = &waE2E.ExtendedTextMessage{
+			ContextInfo: &waE2E.ContextInfo{
+				StanzaID:      &repliedMessageId,
+				Participant:   &replyToJid,
+				QuotedMessage: &waE2E.Message{Conversation: proto.String("[...]")},
+			},
+		}
+	}
+
+	msgContent := &waE2E.Message{
+		Conversation:        proto.String(message),
+		ExtendedTextMessage: extendedMessage,
 	}
 
 	// Send WhatsApp Message Proto
-	_, err = WhatsAppClient[jid].SendMessage(ctx, remoteJID, msgContent, msgExtra)
+	response, err := WhatsAppClient[jid].SendMessage(ctx, remoteJID, msgContent, msgExtra)
+	log.Print(nil).Info("Response: ", response)
 	if err != nil {
 		return "", err
 	}
 
-	return msgExtra.ID, nil
+	return response.ID, nil
 }
 
 func WhatsAppSendLocation(ctx context.Context, jid string, rjid string, latitude float64, longitude float64) (string, error) {
@@ -1407,6 +1431,8 @@ func (wac *WhatsAppConfiguration) handler(rawEvt interface{}) {
 
 		info += "{\"id\":\"" + evt.Info.ID + "\""
 		info += ",\"messageSource\":\"" + evt.Info.MessageSource.SourceString() + "\""
+		info += fmt.Sprintf(",\"sender\":\"%s\"", evt.Info.MessageSource.Sender)
+		info += fmt.Sprintf(",\"chat\":\"%s\"", evt.Info.MessageSource.Chat)
 		if evt.Info.Type != "" {
 			info += ",\"type\":\"" + evt.Info.Type + "\""
 		}
@@ -1605,14 +1631,21 @@ func WhatsAppListen(wsConn *websocket.Conn, jid string) (*WhatsAppConfiguration,
 	return wac, nil
 }
 
-func debugWhatsAppClientMap() {
+func debugWhatsAppClientMap(jid string) {
+	log.Print(nil).Debugf("You asked for jid %s, we have %d clients", jid, len(WhatsAppClient))
 	for key, value := range WhatsAppClient {
-		fmt.Println("Key:", key, "Value:", value)
+		log.Print(nil).Debugln("Key:", key, "Value:", value)
 	}
 }
 
 func WhatsAppRemoveEventHandler(jid string, wac *WhatsAppConfiguration) error {
-	log.Print(nil).Infof("WhatsApp Client %s is Removing Event Handler %d", jid, wac.eventHandlerId)
+	if wac == nil {
+		return errors.New("WhatsApp Event Handler ID is Not Found")
+	}
+
+	eventHandlerId := wac.eventHandlerId
+	log.Print(nil).Infof("WhatsApp Client %s is Removing Event Handler %d", jid, eventHandlerId)
+
 	err := checkWhatsAppClient(jid)
 	if err != nil {
 		return err
@@ -1625,8 +1658,8 @@ func WhatsAppRemoveEventHandler(jid string, wac *WhatsAppConfiguration) error {
 	}
 
 	// Remove WhatsApp Event Handler
-	WhatsAppClient[jid].RemoveEventHandler(wac.eventHandlerId)
-	log.Print(nil).Infof("WhatsApp Client %s Event Handler %d is Removed", jid, wac.eventHandlerId)
+	WhatsAppClient[jid].RemoveEventHandler(eventHandlerId)
+	log.Print(nil).Infof("WhatsApp Client %s Event Handler %d is Removed", jid, eventHandlerId)
 	return nil
 
 }

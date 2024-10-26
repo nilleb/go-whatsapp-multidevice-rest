@@ -143,14 +143,13 @@ func main() {
 		}
 	}()
 
+	ctxShutdown, _ := context.WithTimeout(context.Background(), 5*time.Second)
 	// Watch for Shutdown Signal
 	sigShutdown := make(chan os.Signal, 1)
 	signal.Notify(sigShutdown, os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
-	<-sigShutdown
-
-	// Wait 5 Seconds Before Graceful Shutdown
-	ctxShutdown, cancelShutdown := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancelShutdown()
+	sig := <-sigShutdown
+	log.Print(nil).Printf("Received signal: %s. Shutting down...\n", sig)
+	internal.GracefulShutdown()
 
 	// Try To Shutdown Server
 	err = e.Shutdown(ctxShutdown)

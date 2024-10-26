@@ -5,9 +5,11 @@ type RequestLogin struct {
 }
 
 type RequestSendMessage struct {
-	RJID     string
-	Message  string
-	ViewOnce bool
+	RJID             string
+	Message          string
+	ViewOnce         bool
+	ReplyToMessageId string
+	ReplyToJID       string
 }
 
 type RequestSendLocation struct {

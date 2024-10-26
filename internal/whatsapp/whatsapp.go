@@ -289,6 +289,8 @@ func SendText(c echo.Context) error {
 	var reqSendMessage typWhatsApp.RequestSendMessage
 	reqSendMessage.RJID = strings.TrimSpace(c.FormValue("msisdn"))
 	reqSendMessage.Message = strings.TrimSpace(c.FormValue("message"))
+	reqSendMessage.ReplyToMessageId = strings.TrimSpace(c.FormValue("replyto"))
+	reqSendMessage.ReplyToJID = strings.TrimSpace(c.FormValue("replytojid"))
 
 	if len(reqSendMessage.RJID) == 0 {
 		return router.ResponseBadRequest(c, "Missing Form Value MSISDN")
@@ -299,7 +301,14 @@ func SendText(c echo.Context) error {
 	}
 
 	var resSendMessage typWhatsApp.ResponseSendMessage
-	resSendMessage.MsgID, err = pkgWhatsApp.WhatsAppSendText(c.Request().Context(), jid, reqSendMessage.RJID, reqSendMessage.Message)
+	resSendMessage.MsgID, err = pkgWhatsApp.WhatsAppSendText(
+		c.Request().Context(),
+		jid,
+		reqSendMessage.RJID,
+		reqSendMessage.Message,
+		reqSendMessage.ReplyToMessageId,
+		reqSendMessage.ReplyToJID,
+	)
 	if err != nil {
 		return router.ResponseInternalError(c, err.Error())
 	}
@@ -792,6 +801,10 @@ func MessageDelete(c echo.Context) error {
 	return router.ResponseSuccess(c, "Successfully Delete Message")
 }
 
+func GracefulShutdown(c echo.Context) error {
+	return pkgWhatsApp.Close()
+}
+
 var (
 	upgrader = websocket.Upgrader{
 		ReadBufferSize:  1024,
@@ -802,6 +815,57 @@ var (
 	jidToWac = make(map[string]*pkgWhatsApp.WhatsAppConfiguration)
 	mu       sync.Mutex
 )
+
+func wsCommonErrorHandling(jid string, wac *pkgWhatsApp.WhatsAppConfiguration) {
+	pkgWhatsApp.WhatsAppRemoveEventHandler(jid, wac)
+	mu.Lock()
+	delete(jidToWac, jid)
+	mu.Unlock()
+
+}
+
+func wsReadError(jid string, wac *pkgWhatsApp.WhatsAppConfiguration, c echo.Context, err error) {
+	log.Print(c).Error("Error reading WebSocket message:", err)
+	wsCommonErrorHandling(jid, wac)
+}
+
+func wsWriteError(jid string, wac *pkgWhatsApp.WhatsAppConfiguration, c echo.Context, err error) {
+	log.Print(c).Error("Error writing WebSocket message:", err)
+	wsCommonErrorHandling(jid, wac)
+}
+
+func wsInitContext(jid string, ws *websocket.Conn) (*pkgWhatsApp.WhatsAppConfiguration, error) {
+	mu.Lock()
+	wac, exists := jidToWac[jid]
+	if exists {
+		log.Print(nil).Infof("Updating existing connection for %s", jid)
+		wac.UpdateWsConn(ws)
+	} else {
+		wac, err := pkgWhatsApp.WhatsAppListen(ws, jid)
+		if err != nil {
+			return nil, err
+		}
+		jidToWac[jid] = wac
+
+	}
+	mu.Unlock()
+	return wac, nil
+}
+
+func wsShutdown(c echo.Context, ws *websocket.Conn) {
+	err := ws.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
+	if err != nil {
+		log.Print(c).Error("Error sending close message:", err)
+		return
+	}
+
+	_, _, err = ws.ReadMessage()
+	if err != nil && websocket.IsUnexpectedCloseError(err, websocket.CloseNormalClosure) {
+		log.Print(c).Error("Error reading close acknowledgment:", err)
+	}
+
+	ws.Close()
+}
 
 // WebSocketHandler
 // @Summary     Establish WebSocket Connection
@@ -821,56 +885,22 @@ func WebSocketHandler(c echo.Context) error {
 		return router.ResponseBadRequest(c, err.Error())
 	}
 
-	mu.Lock()
-	wac, exists := jidToWac[jid]
-	if exists {
-		log.Print(nil).Infof("Updating existing connection for %s", jid)
-		wac.UpdateWsConn(ws)
-	} else {
-		wac, err := pkgWhatsApp.WhatsAppListen(ws, jid)
-		if err != nil {
-			return err
-		}
-		jidToWac[jid] = wac
-
+	wac, err := wsInitContext(jid, ws)
+	if err != nil {
+		return err
 	}
-	mu.Unlock()
 
 	go func(ws *websocket.Conn) {
-		defer func() {
-			// Send a close message to the client
-			err := ws.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
-			if err != nil {
-				log.Print(c).Error("Error sending close message:", err)
-				return
-			}
-
-			// Wait for the client to acknowledge the close message
-			_, _, err = ws.ReadMessage()
-			if err != nil && websocket.IsUnexpectedCloseError(err, websocket.CloseNormalClosure) {
-				log.Print(c).Error("Error reading close acknowledgment:", err)
-			}
-
-			// Close the WebSocket connection
-			ws.Close()
-		}()
+		defer wsShutdown(c, ws)
 
 		for {
 			_, msg, err := ws.ReadMessage()
 			if err != nil {
-				log.Print(c).Error("Error writing WebSocket message:", err)
-				pkgWhatsApp.WhatsAppRemoveEventHandler(jid, wac)
-				mu.Lock()
-				delete(jidToWac, jid)
-				mu.Unlock()
+				wsReadError(jid, wac, c, err)
 				return
 			}
 			if err := ws.WriteMessage(websocket.TextMessage, msg); err != nil {
-				log.Print(c).Error("Error writing WebSocket message:", err)
-				pkgWhatsApp.WhatsAppRemoveEventHandler(jid, wac)
-				mu.Lock()
-				delete(jidToWac, jid)
-				mu.Unlock()
+				wsWriteError(jid, wac, c, err)
 				return
 			}
 		}
@@ -897,19 +927,40 @@ func EchoWebSocketHandler(c echo.Context) error {
 	}
 
 	go func(ws *websocket.Conn) {
-		defer ws.Close()
+		defer func() {
+			// Send a close message to the client
+			err := ws.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
+			if err != nil {
+				log.Print(c).Error("Error sending close message:", err)
+				return
+			}
+
+			// Wait for the client to acknowledge the close message
+			_, _, err = ws.ReadMessage()
+			if err != nil && websocket.IsUnexpectedCloseError(err, websocket.CloseNormalClosure) {
+				log.Print(c).Error("Error reading close acknowledgment:", err)
+			}
+
+			// Close the WebSocket connection
+			ws.Close()
+		}()
+
 		for {
 			_, msg, err := ws.ReadMessage()
 			if err != nil {
-				c.Logger().Error("Error reading WebSocket message:", err)
+				log.Print(c).Error("Closing ws because of read error:", err)
 				return
 			}
 			if err := ws.WriteMessage(websocket.TextMessage, msg); err != nil {
-				c.Logger().Error("Error writing WebSocket message:", err)
+				log.Print(c).Error("Closing ws because of write error:", err)
 				return
 			}
 		}
 	}(ws)
 
 	return nil
+}
+
+func Close() {
+	pkgWhatsApp.Close()
 }
